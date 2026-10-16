@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
+import { Product } from '../products/product.entity';
 import { StockMovement, StockMovementReason } from './stock-movement.entity';
 
 export interface StockLine {
@@ -38,17 +39,24 @@ export class InventoryService {
     const sorted = [...lines].sort((a, b) => a.productId - b.productId);
 
     for (const { productId, quantity } of sorted) {
-      const rows: { price: string }[] = await manager.query(
-        `UPDATE products
-            SET stock = stock - $2, updated_at = now()
-          WHERE id = $1 AND deleted_at IS NULL AND stock >= $2
-          RETURNING price`,
-        [productId, quantity],
-      );
-      if (rows.length === 0) {
+      // Note: manager.query() returns [rows, affectedCount] for UPDATE in
+      // TypeORM's Postgres driver, so the query builder is used here to get
+      // an explicit `affected` count and the RETURNING rows in `raw`.
+      const result = await manager
+        .createQueryBuilder()
+        .update(Product)
+        .set({ stock: () => 'stock - :quantity' }) // updated_at is set by TypeORM
+        .where('id = :productId', { productId })
+        .andWhere('deleted_at IS NULL')
+        .andWhere('stock >= :quantity', { quantity })
+        .returning(['price'])
+        .execute();
+
+      if (result.affected !== 1) {
         await this.throwStockError(manager, productId, quantity);
       }
-      prices.set(productId, Number(rows[0].price));
+      const [row] = result.raw as { price: string }[];
+      prices.set(productId, Number(row.price));
     }
     return prices;
   }
