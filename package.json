@@ -21,7 +21,9 @@
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
-    "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js"
+    "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
+    "start:worker": "node dist/worker",
+    "start:worker:dev": "nest start --watch --entryFile worker"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",

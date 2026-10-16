@@ -26,6 +26,10 @@ export class EnvironmentVariables {
   @IsString()
   REDIS_URL!: string;
 
+  /** Local convenience: also run the queue worker inside the API process. */
+  @IsIn(['true', 'false'])
+  RUN_WORKER: string = 'false';
+
   /** Total attempts for one order-processing job (first run + retries). */
   @IsInt()
   @Min(1)
