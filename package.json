@@ -23,7 +23,8 @@
     "migration:revert": "npm run typeorm -- migration:revert",
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "start:worker": "node dist/worker",
-    "start:worker:dev": "nest start --watch --entryFile worker"
+    "start:worker:dev": "nest start --watch --entryFile worker",
+    "test:oversell": "node scripts/oversell-check.mjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",
