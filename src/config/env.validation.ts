@@ -63,6 +63,11 @@ export class EnvironmentVariables {
   @Min(1000)
   CLEANUP_INTERVAL_MS: number = 5 * 60 * 1000;
 
+  /** PENDING orders older than this without a job get their job re-added. */
+  @IsInt()
+  @Min(1)
+  REQUEUE_PENDING_AFTER_SECONDS: number = 60;
+
   @IsInt()
   @Min(1)
   WORKER_CONCURRENCY: number = 5;

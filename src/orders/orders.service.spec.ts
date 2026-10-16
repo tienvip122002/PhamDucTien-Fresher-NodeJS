@@ -22,7 +22,11 @@ describe('OrdersService', () => {
       work(manager),
     ),
   };
-  const ordersRepository = { findOne: jest.fn(), existsBy: jest.fn() };
+  const ordersRepository = {
+    findOne: jest.fn(),
+    existsBy: jest.fn(),
+    createQueryBuilder: jest.fn(),
+  };
   const inventory = {
     take: jest.fn(),
     recordTaken: jest.fn(),
@@ -30,6 +34,7 @@ describe('OrdersService', () => {
   };
   const orderQueue = {
     enqueueProcessOrder: jest.fn(),
+    ensureProcessOrderJob: jest.fn(),
     getProcessOrderJob: jest.fn(),
   };
 
@@ -214,6 +219,31 @@ describe('OrdersService', () => {
 
       await expect(service.cancel(8)).rejects.toBeInstanceOf(ConflictException);
       expect(inventory.release).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requeueStalePending', () => {
+    it('re-adds the job for old PENDING orders that have none, and counts only those', async () => {
+      // Chainable query builder that returns two stale PENDING orders.
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([{ id: 3 }, { id: 4 }]),
+      };
+      ordersRepository.createQueryBuilder.mockReturnValue(qb);
+      orderQueue.ensureProcessOrderJob
+        .mockResolvedValueOnce(true) // order 3 had no job → added
+        .mockResolvedValueOnce(false); // order 4 already has one → skipped
+
+      await expect(service.requeueStalePending(60)).resolves.toBe(1);
+      expect(qb.andWhere).toHaveBeenCalledWith(expect.any(String), {
+        age: 60,
+      });
+      expect(orderQueue.ensureProcessOrderJob).toHaveBeenCalledWith(3);
+      expect(orderQueue.ensureProcessOrderJob).toHaveBeenCalledWith(4);
     });
   });
 

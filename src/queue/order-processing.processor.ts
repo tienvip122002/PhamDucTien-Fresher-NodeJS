@@ -96,13 +96,24 @@ export class OrderProcessingProcessor
     }
   }
 
+  /**
+   * Periodic safety net for PENDING orders:
+   * 1. still PENDING after the TTL → cancel and return the stock;
+   * 2. PENDING for a while without a job (Redis was down when the order was
+   *    placed) → add the missing job so the order still gets processed.
+   */
   private async cleanupExpiredOrders() {
     const ttl = this.config.get('PENDING_ORDER_TTL_MINUTES', { infer: true });
     const cancelled = await this.ordersService.cancelExpiredPending(ttl);
-    if (cancelled > 0) {
-      this.logger.log(`Cancelled ${cancelled} expired PENDING order(s)`);
+    const requeued = await this.ordersService.requeueStalePending(
+      this.config.get('REQUEUE_PENDING_AFTER_SECONDS', { infer: true }),
+    );
+    if (cancelled > 0 || requeued > 0) {
+      this.logger.log(
+        `Expired PENDING orders cancelled: ${cancelled}, missing jobs re-added: ${requeued}`,
+      );
     }
-    return { cancelled };
+    return { cancelled, requeued };
   }
 
   @OnWorkerEvent('completed')

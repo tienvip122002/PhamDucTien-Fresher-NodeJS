@@ -52,6 +52,19 @@ export class OrderQueueService {
     );
   }
 
+  /**
+   * Adds the job only if the order has none yet (e.g. Redis was down when
+   * the order was placed). Returns true when a job was added.
+   * Even if two callers race here, the fixed jobId keeps a single job.
+   */
+  async ensureProcessOrderJob(orderId: number): Promise<boolean> {
+    if (await this.queue.getJob(processOrderJobId(orderId))) {
+      return false;
+    }
+    await this.enqueueProcessOrder(orderId);
+    return true;
+  }
+
   async getProcessOrderJob(orderId: number): Promise<OrderJobInfo | null> {
     const job = await this.queue.getJob(processOrderJobId(orderId));
     if (!job) {

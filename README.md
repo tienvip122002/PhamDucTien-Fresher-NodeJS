@@ -169,7 +169,9 @@ stateDiagram-v2
 3. Thành công thì `PENDING → CONFIRMED` + ghi `notification_logs` (thay cho gửi email).
 4. Lỗi thì BullMQ retry với **exponential backoff** (1s, 2s...). Lần thử cuối vẫn lỗi thì `PENDING → FAILED` + hoàn kho.
 
-**Job định kỳ** `cleanup-expired-orders` (5 phút/lần, BullMQ Job Scheduler): hủy các đơn `PENDING` quá 30 phút và hoàn kho.
+**Job định kỳ** `cleanup-expired-orders` (5 phút/lần, BullMQ Job Scheduler), là lưới an toàn cho đơn `PENDING`:
+1. Đơn `PENDING` quá 1 phút mà **chưa có job** (ví dụ Redis lỗi đúng lúc đặt đơn) thì **thêm lại job**, để đơn vẫn được xử lý.
+2. Đơn vẫn `PENDING` quá 30 phút thì hủy và hoàn kho.
 
 ---
 
@@ -201,8 +203,13 @@ Hai request cùng key đến **cùng lúc**: unique index chỉ cho một bên i
 
 ### Vì sao thêm job **sau** khi commit
 Nếu thêm job bên trong transaction, worker có thể chạy trước khi đơn được commit (không tìm thấy đơn), hoặc chạy cho một đơn đã bị rollback.
-Đổi lại phải xử lý trường hợp Redis lỗi đúng lúc thêm job: khi đó đơn vẫn được lưu `PENDING`, lỗi được ghi log, và job dọn dẹp sẽ hủy đơn rồi hoàn kho sau 30 phút. Không có đơn nào giữ kho mãi mãi.
-Hướng làm chặt hơn nếu có thêm thời gian: dùng **outbox table** (ghi "cần thêm job" trong cùng transaction, một tiến trình khác đẩy vào queue).
+Đổi lại phải xử lý trường hợp **Redis lỗi đúng lúc thêm job**:
+- Đơn vẫn được lưu `PENDING` và lỗi được ghi log, khách vẫn nhận được đơn.
+- Job định kỳ (5 phút/lần) thấy đơn `PENDING` quá 1 phút mà chưa có job thì **thêm lại job**, nên đơn **vẫn được xử lý** chứ không bị bỏ. Việc này an toàn vì `jobId = order-<id>` cố định: đơn đã có job thì bỏ qua, không bao giờ tạo job thứ hai.
+- Quá 30 phút mà vẫn `PENDING` thì mới hủy và hoàn kho, là lớp cuối cùng nên không có đơn nào giữ kho mãi mãi.
+- Đã thử với DB và Redis thật: tạo một đơn `PENDING` không có job, job định kỳ thêm lại job, đơn chuyển `CONFIRMED`, đúng 1 thông báo.
+
+Hướng làm chặt hơn: **outbox table** (ghi "cần thêm job" trong cùng transaction, một tiến trình đẩy vào queue ngay), không phải đợi chu kỳ 5 phút.
 
 ---
 
@@ -241,9 +248,10 @@ Chi tiết request/response: Swagger tại `/api/docs`.
 
 ## 7. Test
 
-- `npm test`: 12 unit test.
+- `npm test`: 16 unit test.
   - **OrdersService:** tạo đơn thành công (gộp item, giá, job thêm sau khi ghi đơn), không đủ tồn kho (không lưu, không thêm job), Redis lỗi khi thêm job, gửi lại `Idempotency-Key`, hai request cùng key chạy đua, hủy đơn hoàn kho, hủy đơn không hợp lệ, confirm idempotent.
-  - **Worker:** thành công, lỗi còn lượt thử (ném lỗi để BullMQ retry), lỗi ở lần cuối (FAILED + hoàn kho), bỏ qua đơn không còn PENDING.
+  - **Worker:** thành công, lỗi còn lượt thử (ném lỗi để BullMQ retry), lỗi ở lần cuối (FAILED + hoàn kho), bỏ qua đơn không còn PENDING, job định kỳ gọi đủ hai bước (hủy đơn quá hạn, thêm lại job thiếu).
+  - **Thêm lại job:** đơn đã có job thì không thêm job thứ hai; đơn thiếu job thì thêm với đúng `jobId` và cấu hình retry; chỉ đếm những đơn thực sự được thêm.
 - `npm run test:oversell`: kiểm tra đồng thời trên API thật, xem mục 5.
 - Đã chạy tay với DB thật: luồng FAILED sau 3 lần thử (kho được hoàn), job dọn dẹp hủy đơn PENDING quá hạn.
 
@@ -294,7 +302,7 @@ Một lỗi chỉ bắt được khi test với DB thật: `manager.query()` c�
 
 ## 10. Chưa làm / có thể cải thiện
 
-- Outbox pattern cho việc thêm job (hiện dựa vào job dọn dẹp làm phương án dự phòng).
+- Outbox pattern cho việc thêm job (hiện dùng job định kỳ thêm lại job thiếu, chậm nhất 5 phút).
 - E2E test chạy với Postgres/Redis thật trong CI (hiện có script `test:oversell` chạy tay).
 - Cảnh báo khi job FAILED, dashboard queue (ví dụ Bull Board).
 - Không có xác thực, phân quyền, thanh toán, frontend (ngoài phạm vi đề).

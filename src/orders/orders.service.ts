@@ -113,7 +113,8 @@ export class OrdersService {
       await this.orderQueue.enqueueProcessOrder(orderId);
     } catch (error) {
       // The order itself is safely stored. If Redis is unavailable it stays
-      // PENDING and the cleanup job cancels it (returning the stock) after the TTL.
+      // PENDING; the periodic job re-adds its job later (requeueStalePending)
+      // and only cancels it, returning the stock, if it is still PENDING after the TTL.
       this.logger.error(
         `Could not enqueue order ${orderId}`,
         error instanceof Error ? error.stack : String(error),
@@ -234,6 +235,33 @@ export class OrdersService {
       OrderStatus.FAILED,
       reason,
     );
+  }
+
+  /**
+   * Re-adds the processing job for PENDING orders that may have missed it
+   * (Redis was down right after the order was committed). Only orders older
+   * than `olderThanSeconds` are checked, so orders whose job is being added
+   * right now are left alone. Orders that already have a job are skipped.
+   */
+  async requeueStalePending(olderThanSeconds: number): Promise<number> {
+    const stale = await this.orders
+      .createQueryBuilder('order')
+      .select('order.id')
+      .where('order.status = :status', { status: OrderStatus.PENDING })
+      .andWhere('order.createdAt < now() - make_interval(secs => :age)', {
+        age: olderThanSeconds,
+      })
+      .orderBy('order.id')
+      .limit(CLEANUP_BATCH_SIZE)
+      .getMany();
+
+    let requeued = 0;
+    for (const { id } of stale) {
+      if (await this.orderQueue.ensureProcessOrderJob(id)) {
+        requeued++;
+      }
+    }
+    return requeued;
   }
 
   /** Cancels PENDING orders older than the TTL and gives their stock back. */

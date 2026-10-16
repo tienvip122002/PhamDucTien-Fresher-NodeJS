@@ -4,13 +4,18 @@ import { EnvironmentVariables } from '../config/env.validation';
 import { OrderStatus } from '../orders/order-status.enum';
 import { OrdersService } from '../orders/orders.service';
 import { OrderProcessingProcessor } from './order-processing.processor';
-import { PROCESS_ORDER_JOB } from './queue.constants';
+import {
+  CLEANUP_EXPIRED_ORDERS_JOB,
+  PROCESS_ORDER_JOB,
+} from './queue.constants';
 
 describe('OrderProcessingProcessor', () => {
   const ordersService = {
     getStatus: jest.fn(),
     confirm: jest.fn(),
     markFailed: jest.fn(),
+    cancelExpiredPending: jest.fn(),
+    requeueStalePending: jest.fn(),
   };
 
   /** Processing takes 0 ms here; failureRate decides whether it fails. */
@@ -19,6 +24,8 @@ describe('OrderProcessingProcessor', () => {
       ORDER_PROCESSING_MIN_MS: 0,
       ORDER_PROCESSING_MAX_MS: 0,
       ORDER_FAILURE_RATE: failureRate,
+      PENDING_ORDER_TTL_MINUTES: 30,
+      REQUEUE_PENDING_AFTER_SECONDS: 60,
     };
     const config = { get: (key: string) => values[key] };
     return new OrderProcessingProcessor(
@@ -75,5 +82,18 @@ describe('OrderProcessingProcessor', () => {
       status: OrderStatus.CANCELLED,
     });
     expect(ordersService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('periodic job cancels expired orders and re-adds missing jobs', async () => {
+    ordersService.cancelExpiredPending.mockResolvedValue(1);
+    ordersService.requeueStalePending.mockResolvedValue(2);
+    const cleanupJob = { name: CLEANUP_EXPIRED_ORDERS_JOB } as Job;
+
+    await expect(createProcessor(0).process(cleanupJob)).resolves.toEqual({
+      cancelled: 1,
+      requeued: 2,
+    });
+    expect(ordersService.cancelExpiredPending).toHaveBeenCalledWith(30);
+    expect(ordersService.requeueStalePending).toHaveBeenCalledWith(60);
   });
 });
