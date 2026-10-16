@@ -51,6 +51,8 @@ export class InitSchema1760580000000 implements MigrationInterface {
         "quantity"   integer       NOT NULL,
         "unit_price" numeric(12,2) NOT NULL,
         CONSTRAINT "CHK_order_items_quantity_positive" CHECK ("quantity" > 0),
+        -- One line per product per order (quantities are merged on create).
+        CONSTRAINT "UQ_order_items_order_product" UNIQUE ("order_id", "product_id"),
         CONSTRAINT "FK_order_items_order" FOREIGN KEY ("order_id")
           REFERENCES "orders" ("id") ON DELETE CASCADE,
         CONSTRAINT "FK_order_items_product" FOREIGN KEY ("product_id")
