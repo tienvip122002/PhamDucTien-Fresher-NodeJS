@@ -1,14 +1,19 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
+  Headers,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { Paginated } from '../common/dto/pagination.dto';
 import { OrderJobInfo } from '../queue/order-queue.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -24,10 +29,37 @@ export class OrdersController {
   /**
    * Places an order (status PENDING) and queues it for processing.
    * 409 INSUFFICIENT_STOCK if any product does not have enough stock.
+   * Repeating a request with the same Idempotency-Key returns the first
+   * order with 200 instead of creating a new one (201).
    */
   @Post()
-  create(@Body() dto: CreateOrderDto): Promise<Order> {
-    return this.ordersService.create(dto);
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      'Optional, 1–100 characters (e.g. a UUID). Makes retries of this request safe.',
+  })
+  async create(
+    @Body() dto: CreateOrderDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<Order> {
+    if (
+      idempotencyKey !== undefined &&
+      (idempotencyKey.trim() === '' || idempotencyKey.length > 100)
+    ) {
+      throw new BadRequestException(
+        'Idempotency-Key must be between 1 and 100 characters',
+      );
+    }
+    const { order, created } = await this.ordersService.create(
+      dto,
+      idempotencyKey,
+    );
+    if (!created) {
+      res.status(HttpStatus.OK);
+    }
+    return order;
   }
 
   @Get()

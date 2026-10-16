@@ -45,6 +45,19 @@ export class Order {
   @Column({ name: 'failure_reason', type: 'text', nullable: true })
   failureReason!: string | null;
 
+  /**
+   * Idempotency-Key sent by the client on POST /orders (optional).
+   * Unique when present; not returned by the API.
+   */
+  @Column({
+    name: 'idempotency_key',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    select: false,
+  })
+  idempotencyKey!: string | null;
+
   @OneToMany(() => OrderItem, (item) => item.order, { cascade: ['insert'] })
   items!: OrderItem[];
 

@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { Paginated, paginate } from '../common/dto/pagination.dto';
+import { isUniqueViolation } from '../common/utils/postgres-errors';
 import { InventoryService, StockLine } from '../inventory/inventory.service';
 import { OrderJobInfo, OrderQueueService } from '../queue/order-queue.service';
 import { CreateOrderDto, OrderItemDto } from './dto/create-order.dto';
@@ -21,6 +22,12 @@ import { OrderStatus } from './order-status.enum';
 
 /** How many expired orders the cleanup job handles per run. */
 const CLEANUP_BATCH_SIZE = 100;
+
+export interface CreateOrderResult {
+  order: Order;
+  /** false when an earlier request with the same Idempotency-Key created it. */
+  created: boolean;
+}
 
 @Injectable()
 export class OrdersService {
@@ -41,36 +48,66 @@ export class OrdersService {
    *
    * The background job is enqueued only after the commit, so the worker
    * never picks up an order that could still be rolled back.
+   *
+   * With an Idempotency-Key, sending the same request again (network retry,
+   * double click) returns the first order instead of creating a second one.
    */
-  async create(dto: CreateOrderDto): Promise<Order> {
+  async create(
+    dto: CreateOrderDto,
+    idempotencyKey?: string,
+  ): Promise<CreateOrderResult> {
+    if (idempotencyKey) {
+      const existing = await this.findByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        return { order: existing, created: false };
+      }
+    }
+
     const lines = mergeLines(dto.items);
+    let orderId: number;
+    try {
+      orderId = await this.dataSource.transaction(async (manager) => {
+        const prices = await this.inventory.take(manager, lines);
 
-    const orderId = await this.dataSource.transaction(async (manager) => {
-      const prices = await this.inventory.take(manager, lines);
+        const items = lines.map(({ productId, quantity }) =>
+          manager.create(OrderItem, {
+            productId,
+            quantity,
+            unitPrice: prices.get(productId),
+          }),
+        );
+        const totalAmount = roundMoney(
+          items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+        );
 
-      const items = lines.map(({ productId, quantity }) =>
-        manager.create(OrderItem, {
-          productId,
-          quantity,
-          unitPrice: prices.get(productId),
-        }),
-      );
-      const totalAmount = roundMoney(
-        items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
-      );
-
-      const order = await manager.save(
-        manager.create(Order, {
-          customerName: dto.customerName,
-          customerEmail: dto.customerEmail,
-          status: OrderStatus.PENDING,
-          totalAmount,
-          items,
-        }),
-      );
-      await this.inventory.recordTaken(manager, order.id, lines);
-      return order.id;
-    });
+        const order = await manager.save(
+          manager.create(Order, {
+            customerName: dto.customerName,
+            customerEmail: dto.customerEmail,
+            status: OrderStatus.PENDING,
+            totalAmount,
+            idempotencyKey: idempotencyKey ?? null,
+            items,
+          }),
+        );
+        await this.inventory.recordTaken(manager, order.id, lines);
+        return order.id;
+      });
+    } catch (error) {
+      // Two requests with the same key at the same moment: the unique index
+      // lets only one of them insert. The other transaction is rolled back
+      // (its stock included) and it returns the order that won.
+      if (
+        idempotencyKey &&
+        isUniqueViolation(error, 'UQ_orders_idempotency_key')
+      ) {
+        const existing = await this.findByIdempotencyKey(idempotencyKey);
+        if (existing) {
+          return { order: existing, created: false };
+        }
+      }
+      throw error;
+    }
 
     try {
       await this.orderQueue.enqueueProcessOrder(orderId);
@@ -83,7 +120,15 @@ export class OrdersService {
       );
     }
 
-    return this.findOne(orderId);
+    return { order: await this.findOne(orderId), created: true };
+  }
+
+  private async findByIdempotencyKey(key: string): Promise<Order | null> {
+    const match = await this.orders.findOne({
+      where: { idempotencyKey: key },
+      select: { id: true },
+    });
+    return match ? this.findOne(match.id) : null;
   }
 
   async findAll(query: QueryOrdersDto): Promise<Paginated<Order>> {
@@ -210,7 +255,7 @@ export class OrdersService {
         id,
         [OrderStatus.PENDING],
         OrderStatus.CANCELLED,
-        `Expired: still PENDING after ${ttlMinutes} minutes`,
+        `Expired: still PENDING after ${ttlMinutes} minute(s)`,
       );
       if (done) {
         cancelled++;
