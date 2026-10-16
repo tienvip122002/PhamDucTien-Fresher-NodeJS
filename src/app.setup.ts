@@ -25,5 +25,17 @@ export function setupApp(app: INestApplication): void {
     'api/docs',
     app,
     SwaggerModule.createDocument(app, swaggerConfig),
+    // On Vercel the Swagger UI static files are not bundled with the
+    // function, so the UI is loaded from a CDN instead.
+    process.env.VERCEL ? SWAGGER_UI_FROM_CDN : {},
   );
 }
+
+const SWAGGER_UI_CDN = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.13';
+const SWAGGER_UI_FROM_CDN = {
+  customCssUrl: `${SWAGGER_UI_CDN}/swagger-ui.css`,
+  customJs: [
+    `${SWAGGER_UI_CDN}/swagger-ui-bundle.js`,
+    `${SWAGGER_UI_CDN}/swagger-ui-standalone-preset.js`,
+  ],
+};
